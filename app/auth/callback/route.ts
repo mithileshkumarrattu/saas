@@ -79,7 +79,7 @@ export async function GET(request: NextRequest) {
   // Compute destination based on intent
   let destination: string
 
-  if (intent === "signup" && !user.organizationId) {
+  if (intent === "signup" && !token) {
     destination = "/onboarding/setup"
   } else {
     destination = getRedirectPath(user)

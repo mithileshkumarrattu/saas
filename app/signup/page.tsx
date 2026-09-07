@@ -61,14 +61,8 @@ export default function SignupPage() {
           }
         }
 
-        // Get session to check destination
-        const response = await fetch("/api/auth/get-session")
-        const sessionData = await response.json()
-        if (sessionData?.user?.organizationId) {
-          router.push(getRedirectPath(sessionData.user))
-        } else {
-          router.push("/onboarding/setup")
-        }
+        // Direct self-signup: Always proceed to organization setup to name and configure org
+        router.push("/onboarding/setup")
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Signup failed"

@@ -30,7 +30,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Forbidden: System Admin permissions required." }, { status: 403 })
     }
 
-    const { rows, dryRun = false } = await req.json()
+    const body = await req.json()
+    const rows = body.rows || body.users || []
+    const dryRun = body.dryRun ?? false
 
     if (!Array.isArray(rows) || rows.length === 0) {
       return NextResponse.json({ error: "No user rows provided." }, { status: 400 })
@@ -73,7 +75,7 @@ export async function POST(req: Request) {
       const designation = (row.designation || "Staff Member").trim()
       const roleStr = (row.role || "MEMBER").trim().toUpperCase()
       const deptName = (row.department || "").trim()
-      let facultyId = (row.faculty_id || row.employee_id || "").trim()
+      let facultyId = (row.faculty_id || row.employee_id || (row as any).employeeId || "").trim()
 
       if (!name) {
         rejectedRows.push({ rowNumber: rowNum, row, reason: "Full name is required." })

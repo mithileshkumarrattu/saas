@@ -172,17 +172,21 @@ export async function ensureUserRecord(authUser: AuthUser): Promise<SessionUser 
     const cycleStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split("T")[0]
     const cycleEnd = new Date(now.getFullYear(), now.getMonth() + 3, 0).toISOString().split("T")[0]
 
-    await db.from("work_cycles").insert({
-      organization_id: orgId,
-      name: "Current Work Cycle",
-      starts_on: cycleStart,
-      ends_on: cycleEnd,
-      scheduled_weight_percentage: 75,
-      salary_threshold_percentage: 85,
-      salary_request_opens_day: 26,
-      status: "ACTIVE",
-      created_by: authUser.id,
-    }).catch(() => {})
+    try {
+      await db.from("work_cycles").insert({
+        organization_id: orgId,
+        name: "Current Work Cycle",
+        starts_on: cycleStart,
+        ends_on: cycleEnd,
+        scheduled_weight_percentage: 75,
+        salary_threshold_percentage: 85,
+        salary_request_opens_day: 26,
+        status: "ACTIVE",
+        created_by: authUser.id,
+      })
+    } catch {
+      // Work cycle seeding is optional during initial provisioning
+    }
 
     return {
       id: authUser.id,

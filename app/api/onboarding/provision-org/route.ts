@@ -1,19 +1,24 @@
 import { getSessionUser } from "@/lib/auth/session"
-import { createClient } from "@/lib/supabase/server"
+import { createAdminClient } from "@/lib/supabase/admin"
 import { NextRequest, NextResponse } from "next/server"
+
+const VALID_ORG_TYPES = [
+  "COLLEGE",
+  "ENTERPRISE",
+  "GOVERNMENT",
+  "NGO",
+  "HOSPITAL",
+  "GENERIC",
+]
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createClient()
-    const db = supabase as any
+    const admin = createAdminClient()
+    const db = admin as any
     const user = await getSessionUser()
 
     if (!user) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 })
-    }
-
-    if (user.organizationId) {
-      return NextResponse.json({ error: "Organization already created" }, { status: 400 })
     }
 
     const { organizationName, organizationType } = await request.json()
@@ -22,37 +27,71 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Organization name required" }, { status: 400 })
     }
 
-    // 1. Create organization
-    const { data: org, error: orgError } = await db
-      .from("organizations")
-      .insert({
-        name: organizationName,
-        type: organizationType || "EDUCATIONAL_INSTITUTION",
-      })
-      .select("id")
-      .single()
+    const orgType = VALID_ORG_TYPES.includes(organizationType)
+      ? organizationType
+      : "COLLEGE"
 
-    if (orgError) throw orgError
-    const orgId = org.id
+    let orgId = user.organizationId
 
-    // 2. Create root organization unit (department)
-    const { data: rootUnit, error: unitError } = await db
+    if (orgId) {
+      // 1. Update existing organization
+      const { error: orgError } = await db
+        .from("organizations")
+        .update({
+          name: organizationName.trim(),
+          type: orgType,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", orgId)
+
+      if (orgError) throw orgError
+    } else {
+      // 1. Create organization
+      const { data: org, error: orgError } = await db
+        .from("organizations")
+        .insert({
+          name: organizationName.trim(),
+          type: orgType,
+        })
+        .select("id")
+        .single()
+
+      if (orgError) throw orgError
+      orgId = org.id
+    }
+
+    // 2. Ensure root organization unit exists
+    const { data: existingUnit } = await db
       .from("org_units")
-      .insert({
-        organization_id: orgId,
-        name: "Root",
-        unit_type: "DEPARTMENT",
-        parent_id: null,
-      })
       .select("id")
-      .single()
+      .eq("organization_id", orgId)
+      .limit(1)
+      .maybeSingle()
 
-    if (unitError) throw unitError
+    let rootUnitId = existingUnit?.id
+
+    if (!rootUnitId) {
+      const { data: rootUnit, error: unitError } = await db
+        .from("org_units")
+        .insert({
+          organization_id: orgId,
+          name: "Main",
+          unit_type: "DEPARTMENT",
+          parent_id: null,
+        })
+        .select("id")
+        .single()
+
+      if (!unitError && rootUnit) {
+        rootUnitId = rootUnit.id
+      }
+    }
 
     // 3. Get or create DIRECTOR role
     const { data: directorRole } = await db
       .from("roles")
       .select("id")
+      .eq("organization_id", orgId)
       .eq("scope_level", "DIRECTOR")
       .limit(1)
       .maybeSingle()
@@ -79,7 +118,7 @@ export async function POST(request: NextRequest) {
       .from("users")
       .update({
         organization_id: orgId,
-        org_unit_id: rootUnit?.id || null,
+        org_unit_id: rootUnitId || null,
       })
       .eq("id", user.id)
 
@@ -87,29 +126,30 @@ export async function POST(request: NextRequest) {
     if (roleId) {
       await db
         .from("user_roles")
-        .insert({
+        .upsert({
           user_id: user.id,
           role_id: roleId,
-        })
+        }, { onConflict: "user_id,role_id" })
     }
 
-    // 6. Create Director's three wallets: SALARY_POOL, LOAN_POOL, PERSONAL
+    // 6. Ensure Director's three wallets: SALARY_POOL, LOAN_POOL, PERSONAL
     const wallets = ["SALARY_POOL", "LOAN_POOL", "PERSONAL"]
     for (const purpose of wallets) {
       await db
         .from("wallets")
-        .insert({
+        .upsert({
           organization_id: orgId,
           owner_user_id: user.id,
           purpose: purpose,
           balance: 0,
-        })
+        }, { onConflict: "owner_user_id,purpose" })
     }
 
     return NextResponse.json({
       success: true,
       organizationId: orgId,
-      unitId: rootUnit?.id,
+      unitId: rootUnitId,
+      redirectPath: `/${orgId}/director`,
     })
   } catch (error) {
     console.error("[provision-org] Error:", error)

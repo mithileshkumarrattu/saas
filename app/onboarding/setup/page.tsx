@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
-import { createClient } from "@/lib/supabase/client"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -18,42 +17,35 @@ import { Building2, Loader2 } from "lucide-react"
 
 export default function SetupPage() {
   const router = useRouter()
-  const supabase = createClient()
-  const db = supabase as any
 
   const [orgName, setOrgName] = useState("")
-  const [orgType, setOrgType] = useState("EDUCATIONAL_INSTITUTION")
+  const [orgType, setOrgType] = useState("COLLEGE")
   const [loading, setLoading] = useState(false)
+  const [fetchingSession, setFetchingSession] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // Check if organization already exists and has a configured name
+  // Verify session on mount
   useEffect(() => {
-    const checkExistingOrg = async () => {
+    const checkSession = async () => {
       try {
         const response = await fetch("/api/auth/get-session")
         if (response.ok) {
           const sessionData = await response.json()
-          const orgId = sessionData?.user?.organizationId
-          if (orgId) {
-            // Check if organization has already been renamed from the default
-            const { data: org } = await db
-              .from("organizations")
-              .select("name")
-              .eq("id", orgId)
-              .single()
-              
-            if (org && org.name !== "My Organization" && org.name !== "Temp Org") {
-              // Already fully onboarded, redirect to director dashboard
-              router.push(`/${orgId}/director`)
-            }
+          if (!sessionData?.user) {
+            router.push("/login")
+            return
           }
+        } else {
+          router.push("/login")
         }
       } catch (err) {
         console.error("Failed to check existing session:", err)
+      } finally {
+        setFetchingSession(false)
       }
     }
-    checkExistingOrg()
-  }, [router, db])
+    checkSession()
+  }, [router])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -65,34 +57,36 @@ export default function SetupPage() {
         throw new Error("Organization name is required")
       }
 
-      // Get session first to get orgId
-      const sessionResponse = await fetch("/api/auth/get-session")
-      if (!sessionResponse.ok) throw new Error("Failed to retrieve authentication session")
-      
-      const sessionData = await sessionResponse.json()
-      const orgId = sessionData?.user?.organizationId
+      const res = await fetch("/api/onboarding/setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          organizationName: orgName.trim(),
+          organizationType: orgType,
+        }),
+      })
 
-      if (!orgId) throw new Error("Organization context not found. Please log in again.")
-
-      // Update the organization name and type directly
-      const { error: orgError } = await db
-        .from("organizations")
-        .update({
-          name: orgName,
-          type: orgType,
-        })
-        .eq("id", orgId)
-
-      if (orgError) throw orgError
+      const data = await res.json()
+      if (!res.ok || data.error) {
+        throw new Error(data.error || "Failed to setup organization")
+      }
 
       // Redirect to director dashboard dynamically
-      router.push(`/${orgId}/director`)
+      router.push(data.redirectPath || `/${data.organizationId}/director`)
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to setup organization"
       setError(message)
     } finally {
       setLoading(false)
     }
+  }
+
+  if (fetchingSession) {
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+      </div>
+    )
   }
 
   return (
@@ -135,11 +129,12 @@ export default function SetupPage() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="EDUCATIONAL_INSTITUTION">Educational Institution</SelectItem>
-                  <SelectItem value="CORPORATE">Corporate</SelectItem>
+                  <SelectItem value="COLLEGE">Educational Institution / College</SelectItem>
+                  <SelectItem value="ENTERPRISE">Corporate / Enterprise</SelectItem>
                   <SelectItem value="GOVERNMENT">Government</SelectItem>
-                  <SelectItem value="NGO">NGO</SelectItem>
-                  <SelectItem value="OTHER">Other</SelectItem>
+                  <SelectItem value="NGO">Non-Governmental Organization (NGO)</SelectItem>
+                  <SelectItem value="HOSPITAL">Healthcare / Hospital</SelectItem>
+                  <SelectItem value="GENERIC">Other / General</SelectItem>
                 </SelectContent>
               </Select>
             </div>
