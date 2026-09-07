@@ -1,8 +1,15 @@
-import { type NextRequest } from "next/server"
+import { type NextRequest, NextResponse } from "next/server"
 import { updateSession } from "@/lib/supabase/middleware"
 
 export async function middleware(request: NextRequest) {
-  return await updateSession(request)
+  try {
+    return await updateSession(request)
+  } catch (error) {
+    console.error("[middleware] Unhandled invocation error:", error)
+    return NextResponse.next({
+      request,
+    })
+  }
 }
 
 export const config = {
@@ -17,3 +24,4 @@ export const config = {
     "/((?!_next/static|_next/image|favicon.ico|.*\\.svg$).*)",
   ],
 }
+
