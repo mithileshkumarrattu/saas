@@ -244,7 +244,7 @@ export function PeopleManagerClient({ orgId, initialUsers, departments }: Props)
                     <Input
                       id="user-pass"
                       type="password"
-                      placeholder="Defaults to ChangeMe123!"
+                      placeholder="Defaults to Welcome@WorkLedger2026!"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       className="h-9 text-xs"

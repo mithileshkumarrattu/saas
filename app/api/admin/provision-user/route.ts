@@ -58,7 +58,7 @@ export async function POST(req: Request) {
     }
 
     // 2. Check if user already exists in auth.users or public.users
-    const tempPassword = password || process.env.BULK_IMPORT_DEFAULT_PASSWORD || "ChangeMe123!"
+    const tempPassword = password || process.env.BULK_IMPORT_DEFAULT_PASSWORD || "Welcome@WorkLedger2026!"
     let authUserId: string | null = null
 
     // Try to create auth user

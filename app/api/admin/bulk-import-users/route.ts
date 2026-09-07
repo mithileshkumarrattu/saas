@@ -59,7 +59,7 @@ export async function POST(req: Request) {
       roleByScope.set(r.scope_level, r.id)
     }
 
-    const defaultPassword = process.env.BULK_IMPORT_DEFAULT_PASSWORD || "ChangeMe123!"
+    const defaultPassword = process.env.BULK_IMPORT_DEFAULT_PASSWORD || "Welcome@WorkLedger2026!"
 
     // 2. Validate and normalize rows
     const validRows: any[] = []
