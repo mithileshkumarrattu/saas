@@ -1,6 +1,12 @@
 import { createAdminClient } from "@/lib/supabase/admin"
 import { getSessionUser } from "@/lib/auth/session"
-import { executeSalaryMint, getEtherscanTxUrl } from "@/lib/blockchain/work-token"
+import {
+  executeSalaryMint,
+  getEtherscanTxUrl,
+  DEFAULT_SEPOLIA_RPC,
+  DEFAULT_WORK_TOKEN_ADDRESS,
+} from "@/lib/blockchain/work-token"
+import { createRandomWallet } from "@/lib/blockchain/wallet-utils"
 import { NextResponse } from "next/server"
 
 export async function POST(req: Request) {
@@ -73,7 +79,7 @@ export async function POST(req: Request) {
     }
 
     // 3. Find faculty's custodial audit wallet
-    const { data: facultyWallet } = await db
+    let { data: facultyWallet } = await db
       .from("blockchain_wallets")
       .select("id, public_address")
       .eq("user_id", salaryReq.user_id)
@@ -82,9 +88,36 @@ export async function POST(req: Request) {
       .maybeSingle()
 
     if (!facultyWallet || !facultyWallet.public_address) {
+      try {
+        const { address, encryptedPrivateKey } = createRandomWallet()
+        const nowIso = new Date().toISOString()
+        const { data: newWal } = await db
+          .from("blockchain_wallets")
+          .insert({
+            organization_id: orgId,
+            user_id: salaryReq.user_id,
+            public_address: address,
+            encrypted_private_key: encryptedPrivateKey,
+            purpose: "PERSONAL",
+            network: "sepolia",
+            created_at: nowIso,
+            updated_at: nowIso,
+          })
+          .select("id, public_address")
+          .single()
+
+        if (newWal) {
+          facultyWallet = newWal
+        }
+      } catch (walErr) {
+        console.warn("[settle-salary] Auto-provision note:", walErr)
+      }
+    }
+
+    if (!facultyWallet || !facultyWallet.public_address) {
       return NextResponse.json(
         {
-          error: `Faculty member ${salaryReq.users?.name || "faculty"} must create an audit wallet before settlement.`,
+          error: `Faculty member ${salaryReq.users?.name || "faculty"} must have an audit wallet before settlement.`,
         },
         { status: 400 }
       )
@@ -94,14 +127,17 @@ export async function POST(req: Request) {
     const tokenAmount = customAmount && Number(customAmount) > 0 ? Number(customAmount) : 10
 
     // 4. Check if blockchain is configured
-    const rpcUrl = process.env.SEPOLIA_RPC_URL
-    const tokenAddress = process.env.WORK_TOKEN_ADDRESS
-    const treasuryKey = process.env.TREASURY_PRIVATE_KEY
+    const rpcUrl = process.env.SEPOLIA_RPC_URL || DEFAULT_SEPOLIA_RPC
+    const tokenAddress =
+      process.env.WORK_TOKEN_ADDRESS ||
+      process.env.WORK_TOKEN_CONTRACT_ADDRESS ||
+      DEFAULT_WORK_TOKEN_ADDRESS
+    const treasuryKey = process.env.TREASURY_PRIVATE_KEY || process.env.ADMIN_PRIVATE_KEY
 
     if (!rpcUrl || !tokenAddress || !treasuryKey) {
       return NextResponse.json(
         {
-          error: "Sepolia treasury is not configured in server environment (SEPOLIA_RPC_URL, WORK_TOKEN_ADDRESS, or TREASURY_PRIVATE_KEY missing).",
+          error: "Sepolia treasury signing key is not configured in server environment (TREASURY_PRIVATE_KEY).",
         },
         { status: 503 }
       )

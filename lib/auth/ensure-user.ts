@@ -1,6 +1,7 @@
 import { createAdminClient } from "@/lib/supabase/admin"
 import { SessionUser } from "./session"
 import type { User as AuthUser } from "@supabase/supabase-js"
+import { createRandomWallet, fundWallet } from "@/lib/blockchain/wallet-utils"
 
 /**
  * Standard system roles seeded on organization creation
@@ -13,6 +14,64 @@ export const STANDARD_ROLES = [
   { name: "Finance Administrator", scope_level: "FINANCE_ADMIN", is_system_role: true },
   { name: "Faculty / Member", scope_level: "MEMBER", is_system_role: true },
 ]
+
+/**
+ * Idempotently ensures the user has a personal Sepolia blockchain audit wallet provisioned.
+ * Generates an encrypted keypair using AES-256 and persists it to public.blockchain_wallets.
+ * Safe and non-destructive: if a wallet already exists, it is untouched.
+ */
+export async function ensureUserBlockchainWallet(
+  db: any,
+  userId: string,
+  organizationId: string
+): Promise<{ address: string; isNew: boolean } | null> {
+  if (!userId || !organizationId) return null
+
+  try {
+    const { data: existing } = await db
+      .from("blockchain_wallets")
+      .select("id, public_address")
+      .eq("user_id", userId)
+      .eq("organization_id", organizationId)
+      .eq("purpose", "PERSONAL")
+      .maybeSingle()
+
+    if (existing) {
+      return { address: existing.public_address, isNew: false }
+    }
+
+    const { address, encryptedPrivateKey } = createRandomWallet()
+    const nowIso = new Date().toISOString()
+
+    const { data: inserted, error: insertErr } = await db
+      .from("blockchain_wallets")
+      .insert({
+        organization_id: organizationId,
+        user_id: userId,
+        public_address: address,
+        encrypted_private_key: encryptedPrivateKey,
+        purpose: "PERSONAL",
+        network: "sepolia",
+        created_at: nowIso,
+        updated_at: nowIso,
+      })
+      .select("id, public_address")
+      .single()
+
+    if (insertErr) {
+      console.warn("[ensureUserBlockchainWallet] Insert note:", insertErr.message)
+      return null
+    }
+
+    // Trigger gas funding asynchronously if relayer key is present
+    fundWallet(address).catch(() => {})
+
+    return { address: inserted.public_address, isNew: true }
+  } catch (err: any) {
+    console.warn("[ensureUserBlockchainWallet] Execution error:", err?.message)
+    return null
+  }
+}
 
 /**
  * Ensures a user record exists in public.users, organizations, and user_roles.
@@ -156,6 +215,9 @@ export async function ensureUserRecord(authUser: AuthUser): Promise<SessionUser 
           { onConflict: "owner_user_id,purpose" }
         )
 
+        // Ensure Sepolia blockchain wallet is provisioned
+        ensureUserBlockchainWallet(db, authUser.id, orgId).catch(() => {})
+
         return {
           id: authUser.id,
           email,
@@ -172,6 +234,9 @@ export async function ensureUserRecord(authUser: AuthUser): Promise<SessionUser 
     if (existingUser && existingUser.organization_id) {
       const roles = (existingUser.user_roles as any[])?.map((ur: any) => ur.roles?.id).filter(Boolean) || []
       const scopeLevels = (existingUser.user_roles as any[])?.map((ur: any) => ur.roles?.scope_level).filter(Boolean) || []
+
+      // Ensure Sepolia blockchain wallet is provisioned
+      ensureUserBlockchainWallet(db, existingUser.id, existingUser.organization_id).catch(() => {})
 
       return {
         id: existingUser.id,
@@ -254,6 +319,9 @@ export async function ensureUserRecord(authUser: AuthUser): Promise<SessionUser 
     } catch {
       // Work cycle seeding is optional during initial provisioning
     }
+
+    // Ensure Sepolia blockchain wallet is provisioned
+    ensureUserBlockchainWallet(db, authUser.id, orgId).catch(() => {})
 
     return {
       id: authUser.id,

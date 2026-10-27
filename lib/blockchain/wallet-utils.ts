@@ -1,11 +1,22 @@
 import { ethers } from "ethers"
 import CryptoJS from "crypto-js"
+import crypto from "crypto"
 import WORK_TOKEN_ABI from "./WorkTokenABI.json"
 
-const DEFAULT_SEPOLIA_RPC = "https://ethereum-sepolia-rpc.publicnode.com"
-const DEFAULT_ENCRYPTION_KEY = "workledger-sepolia-aes-master-key-2026!"
+export const DEFAULT_SEPOLIA_RPC = "https://ethereum-sepolia-rpc.publicnode.com"
+export const DEFAULT_ENCRYPTION_KEY = "workledger-sepolia-aes-master-key-2026!"
+export const DEFAULT_WORK_TOKEN_ADDRESS = "0x8e97d9ABDC7013B37e529512a1d36133d27fBef5"
+export const DEFAULT_OWNER_ADDRESS = "0x20ed3c4334c3215d7cf5e879f73c18a5a5b5b03a"
+
 export const WORK_TOKEN_CONTRACT_ADDRESS =
-  process.env.WORK_TOKEN_CONTRACT_ADDRESS || "0x9876543210123456789012345678901234567890"
+  process.env.WORK_TOKEN_CONTRACT_ADDRESS ||
+  process.env.WORK_TOKEN_ADDRESS ||
+  DEFAULT_WORK_TOKEN_ADDRESS
+
+export const TOKEN_OWNER_ADDRESS =
+  process.env.TREASURY_PUBLIC_ADDRESS ||
+  process.env.TOKEN_OWNER_ADDRESS ||
+  DEFAULT_OWNER_ADDRESS
 
 /**
  * Helper to build standard Sepolia Etherscan link.
@@ -47,28 +58,44 @@ export function createRandomWallet(): {
 
 /**
  * Decrypts an AES-256 encrypted private key in server memory.
+ * Supports CryptoJS AES ciphertext format and legacy AES-256-GCM format.
  * Keys are never logged and never exposed to the client.
  */
-export function decryptPrivateKey(encryptedPrivateKey: string): string {
+export function decryptPrivateKey(encryptedPayload: string): string {
   const primaryKey = process.env.WALLET_ENCRYPTION_KEY || DEFAULT_ENCRYPTION_KEY
   const backupKey = process.env.BACKUP_WALLET_ENCRYPTION_KEY
 
-  try {
-    const bytes = CryptoJS.AES.decrypt(encryptedPrivateKey, primaryKey)
-    const decrypted = bytes.toString(CryptoJS.enc.Utf8)
-    if (decrypted && decrypted.startsWith("0x")) return decrypted
-  } catch (err) {
-    console.warn("[wallet-utils] Primary AES key failed, attempting backup key...")
-  }
-
-  if (backupKey) {
+  const tryDecrypt = (payload: string, keyStr: string): string | null => {
     try {
-      const bytes = CryptoJS.AES.decrypt(encryptedPrivateKey, backupKey)
+      if (payload.includes(":")) {
+        const parts = payload.split(":")
+        if (parts.length === 3) {
+          const [ivHex, authTagHex, encryptedHex] = parts
+          const key = crypto.createHash("sha256").update(keyStr).digest()
+          const iv = Buffer.from(ivHex, "hex")
+          const authTag = Buffer.from(authTagHex, "hex")
+          const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv)
+          decipher.setAuthTag(authTag)
+          let decrypted = decipher.update(encryptedHex, "hex", "utf8")
+          decrypted += decipher.final("utf8")
+          if (decrypted && decrypted.startsWith("0x")) return decrypted
+        }
+      }
+      const bytes = CryptoJS.AES.decrypt(payload, keyStr)
       const decrypted = bytes.toString(CryptoJS.enc.Utf8)
       if (decrypted && decrypted.startsWith("0x")) return decrypted
-    } catch (err) {
-      console.error("[wallet-utils] Backup AES decryption also failed.")
+    } catch {
+      // Ignore individual attempt failure
     }
+    return null
+  }
+
+  const primaryResult = tryDecrypt(encryptedPayload, primaryKey)
+  if (primaryResult) return primaryResult
+
+  if (backupKey) {
+    const backupResult = tryDecrypt(encryptedPayload, backupKey)
+    if (backupResult) return backupResult
   }
 
   throw new Error("Unable to decrypt blockchain private key.")
@@ -87,7 +114,7 @@ export function getWalletInstance(encryptedPrivateKey: string): ethers.Wallet {
  * Get the Director / Org Admin Genesis Signer that pays gas for relays.
  */
 export function getAdminWallet(): ethers.Wallet | null {
-  const adminKey = process.env.ADMIN_PRIVATE_KEY
+  const adminKey = process.env.ADMIN_PRIVATE_KEY || process.env.TREASURY_PRIVATE_KEY
   if (!adminKey) {
     return null
   }

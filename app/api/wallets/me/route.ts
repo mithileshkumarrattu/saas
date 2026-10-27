@@ -1,6 +1,13 @@
 import { createAdminClient } from "@/lib/supabase/admin"
 import { getSessionUser } from "@/lib/auth/session"
-import { encryptPrivateKey, WORK_TOKEN_ABI } from "@/lib/blockchain/work-token"
+import {
+  encryptPrivateKey,
+  WORK_TOKEN_ABI,
+  DEFAULT_SEPOLIA_RPC,
+  DEFAULT_WORK_TOKEN_ADDRESS,
+  DEFAULT_ENCRYPTION_KEY,
+} from "@/lib/blockchain/work-token"
+import { fundWallet } from "@/lib/blockchain/wallet-utils"
 import { ethers } from "ethers"
 import { NextResponse } from "next/server"
 
@@ -18,8 +25,11 @@ export async function GET() {
 
     const admin = createAdminClient()
     const db = admin as any
-    const rpcUrl = process.env.SEPOLIA_RPC_URL
-    const tokenAddress = process.env.WORK_TOKEN_ADDRESS
+    const rpcUrl = process.env.SEPOLIA_RPC_URL || DEFAULT_SEPOLIA_RPC
+    const tokenAddress =
+      process.env.WORK_TOKEN_ADDRESS ||
+      process.env.WORK_TOKEN_CONTRACT_ADDRESS ||
+      DEFAULT_WORK_TOKEN_ADDRESS
     const isChainConfigured = Boolean(rpcUrl && tokenAddress)
 
     // 1. Fetch user's personal audit wallet record
@@ -31,7 +41,40 @@ export async function GET() {
       .eq("purpose", "PERSONAL")
       .maybeSingle()
 
-    if (!walletRecord) {
+    let activeWallet = walletRecord
+
+    // Auto-provision if missing
+    if (!activeWallet) {
+      try {
+        const randomWallet = ethers.Wallet.createRandom()
+        const encryptedKey = encryptPrivateKey(randomWallet.privateKey)
+        const nowIso = new Date().toISOString()
+
+        const { data: inserted } = await db
+          .from("blockchain_wallets")
+          .insert({
+            user_id: user.id,
+            organization_id: user.organizationId,
+            public_address: randomWallet.address,
+            encrypted_private_key: encryptedKey,
+            purpose: "PERSONAL",
+            network: "sepolia",
+            created_at: nowIso,
+            updated_at: nowIso,
+          })
+          .select("id, public_address, purpose, network, created_at")
+          .single()
+
+        if (inserted) {
+          activeWallet = inserted
+          fundWallet(randomWallet.address).catch(() => {})
+        }
+      } catch (genErr) {
+        console.warn("[wallets/me] Auto-provision note:", genErr)
+      }
+    }
+
+    if (!activeWallet) {
       return NextResponse.json({
         status: isChainConfigured ? "READY_NO_WALLET" : "NOT_CONFIGURED",
         configured: isChainConfigured,
@@ -52,13 +95,13 @@ export async function GET() {
       try {
         const provider = new ethers.JsonRpcProvider(rpcUrl)
         const [ethWei, contract] = [
-          await provider.getBalance(walletRecord.public_address).catch(() => BigInt(0)),
+          await provider.getBalance(activeWallet.public_address).catch(() => BigInt(0)),
           new ethers.Contract(tokenAddress, WORK_TOKEN_ABI, provider),
         ]
 
         const [decimals, tokenWei] = await Promise.all([
           contract.decimals().catch(() => 18),
-          contract.balanceOf(walletRecord.public_address).catch(() => BigInt(0)),
+          contract.balanceOf(activeWallet.public_address).catch(() => BigInt(0)),
         ])
 
         ethBalance = ethers.formatEther(ethWei)
@@ -74,7 +117,7 @@ export async function GET() {
       .from("blockchain_transactions")
       .select("id, tx_hash, amount, event_type, status, block_number, created_at, from_address, to_address")
       .eq("organization_id", user.organizationId)
-      .or(`to_address.eq.${walletRecord.public_address},from_address.eq.${walletRecord.public_address}`)
+      .or(`to_address.eq.${activeWallet.public_address},from_address.eq.${activeWallet.public_address}`)
       .order("created_at", { ascending: false })
       .limit(10)
 
@@ -94,12 +137,12 @@ export async function GET() {
       configured: isChainConfigured,
       rpcReachable: isReachable,
       wallet: {
-        id: walletRecord.id,
-        publicAddress: walletRecord.public_address,
+        id: activeWallet.id,
+        publicAddress: activeWallet.public_address,
         ethBalance,
         workBalance,
-        network: walletRecord.network || "sepolia",
-        createdAt: walletRecord.created_at,
+        network: activeWallet.network || "sepolia",
+        createdAt: activeWallet.created_at,
       },
       transactions,
     })
@@ -120,13 +163,7 @@ export async function POST() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const encryptionKey = process.env.WALLET_ENCRYPTION_KEY
-    if (!encryptionKey) {
-      return NextResponse.json(
-        { error: "Server WALLET_ENCRYPTION_KEY is not configured." },
-        { status: 500 }
-      )
-    }
+    const encryptionKey = process.env.WALLET_ENCRYPTION_KEY || DEFAULT_ENCRYPTION_KEY
 
     const admin = createAdminClient()
     const db = admin as any
